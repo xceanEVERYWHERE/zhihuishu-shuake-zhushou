@@ -7,7 +7,7 @@
     if (!note) {
       note = document.createElement('div'); note.id = 'zhs-unified-bootstrap'; note.setAttribute('role','status');
       note.style.cssText='position:fixed;top:96px;right:16px;z-index:2147483647;background:#fff4cc;color:#402c00;padding:18px;border-radius:10px;box-shadow:0 4px 18px #0003;width:300px;max-width:calc(100vw - 68px);font:14px/1.7 sans-serif';
-      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 2.1.4';
+      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 2.1.4.1';
       detail = document.createElement('p'); detail.style.cssText='margin:10px 0';
       retryButton = document.createElement('button'); retryButton.id = 'zhs-unified-retry'; retryButton.textContent = '重试启动';
       reloadButton = document.createElement('button'); reloadButton.id = 'zhs-unified-reload'; reloadButton.textContent = '刷新页面';
@@ -39,7 +39,7 @@
   const {GM_getValue,GM_setValue,GM_xmlhttpRequest,GM_registerMenuCommand,GM_setClipboard} = runtime;
 (() => {
   'use strict';
-  const VERSION = '2.1.4';
+  const VERSION = '2.1.4.1';
   const PLAYBACK_RATE = 1, ADVANCE_WAIT_MS = 5000;
   // 作业页即使被手动配置为匹配，也不注入面板或操作题目。
   if (location.hostname === 'onlineexamh5new.zhihuishu.com') return;
@@ -1008,11 +1008,11 @@ async function tickPopup(dialog, token) {
       try { return await tickSharedPopup(dialog, token); }
       catch (error) {
         if (!error.inputUnconfirmed || !isActive(token) || blocker()) throw error;
-        sharedPopup = {...sharedPopup, phase:'manual-input'};
-        record('随堂弹题输入未确认，等待手动处理', {message:error.message});
+        sharedPopup = {...sharedPopup, phase:'manual-input', reason:error.message};
+        record('随堂弹题输入未确认，等待手动处理', {action:error.inputKind, message:error.message});
       }
     }
-    setStatus('本次输入未确认，请手动处理当前弹窗。关窗后会继续播放。');
+    setStatus(`${sharedPopup.reason} 请手动处理当前弹窗，关窗后会继续播放。`);
     return {handled:true, phase:'manual-input'};
   }
   if (!config.autoSubmit) {
@@ -1155,7 +1155,10 @@ function sharedInput(request, token, timeout = 18000) {
     const finish = (error,result) => {
       if (sharedInputPending?.id !== id) return;
       clearTimeout(timer); sharedInputPending = null;
-      if (error && dispatched && request.kind !== 'status') error.inputUnconfirmed = true;
+      if (error && dispatched && request.kind !== 'status') {
+        error.inputUnconfirmed = true;
+        error.inputKind = request.kind;
+      }
       error ? reject(error) : resolve(result);
     };
     sharedInputPending = {id,finish};

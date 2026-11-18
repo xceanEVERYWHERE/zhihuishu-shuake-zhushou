@@ -185,7 +185,7 @@ async function mouse(b, job, type, point) {
     const confirmed = delay(chrome.debugger.sendCommand({tabId: b.tabId}, 'Input.dispatchMouseEvent', {
       type, x: point.x, y: point.y, button: type === 'mouseMoved' ? 'none' : 'left',
       buttons: pressed ? 1 : 0, ...(type === 'mouseMoved' ? {} : {clickCount: 1}), pointerType: 'mouse'
-    }), 4000, '鼠标输入');
+    }), 4000, {mouseMoved:'移动鼠标', mousePressed:'按下鼠标', mouseReleased:'松开鼠标'}[type]);
     if (type === 'mouseReleased') b.releaseAck = confirmed;
     await confirmed;
   } catch (error) {
@@ -202,7 +202,11 @@ async function execute(b, job) {
   live(b, job); const a = coordinates(prepared);
   if (!a) return;
   if (!P.isId(prepared.ticket)) throw Error('输入复核票据无效。');
-  job.phase = 'moving'; await mouse(b, job, 'mouseMoved', a);
+  // 弹题控件已滚入视口。直接在复核后的坐标点击，避免等待独立的悬停回执。
+  if (job.request.kind === 'lesson' || job.request.kind === 'restoreLesson') {
+    job.phase = 'moving';
+    await mouse(b, job, 'mouseMoved', a);
+  }
   live(b, job); await currentTab(b); live(b, job);
   await globalThis.ZhsCore.authorizeInput(job.sender, job.request);
   live(b, job);
