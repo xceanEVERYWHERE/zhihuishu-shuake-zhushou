@@ -30,7 +30,7 @@
       option: ['id', 'kind', 'signature', 'index', 'selected'],
       page: ['id', 'kind', 'signature', 'number'],
       close: ['id', 'kind', 'signature', 'selected'],
-      lesson: ['id', 'kind', 'from', 'to'],
+      lesson: ['id', 'kind', 'from', 'to'], restoreLesson: ['id', 'kind', 'from', 'to'],
     }[request.kind];
     if (!allowed || Object.keys(request).length !== allowed.length ||
         Object.keys(request).some(key => !allowed.includes(key))) throw Error('请求字段或动作不受支持。');
@@ -40,7 +40,7 @@
     if (request.kind === 'page' && (!Number.isInteger(request.number) || request.number < 1 || request.number > 999)) throw Error('题号无效。');
     if (request.kind === 'close' && (!Array.isArray(request.selected) || request.selected.length < 2 ||
         request.selected.length > 10 || !request.selected.every(value => typeof value === 'boolean'))) throw Error('关闭前的选中状态无效。');
-    if (request.kind === 'lesson' && [request.from, request.to].some(value =>
+    if (['lesson','restoreLesson'].includes(request.kind) && [request.from, request.to].some(value =>
       typeof value !== 'string' || !/^(?:0|[1-9]\d{0,3}):lesson:[^\s\x00-\x1f]{1,80}$/u.test(value))) throw Error('视频目录标识无效。');
     if (request.kind === 'cancel' && (typeof request.cancelId !== 'string' || !UUID.test(request.cancelId) ||
         request.cancelId.toLowerCase() === request.id.toLowerCase())) throw Error('取消请求的目标 ID 无效。');

@@ -7,7 +7,7 @@
     if (!note) {
       note = document.createElement('div'); note.id = 'zhs-unified-bootstrap'; note.setAttribute('role','status');
       note.style.cssText='position:fixed;top:96px;right:16px;z-index:2147483647;background:#fff4cc;color:#402c00;padding:18px;border-radius:10px;box-shadow:0 4px 18px #0003;width:300px;max-width:calc(100vw - 68px);font:14px/1.7 sans-serif';
-      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 2.1.3';
+      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 2.1.5';
       detail = document.createElement('p'); detail.style.cssText='margin:10px 0';
       retryButton = document.createElement('button'); retryButton.id = 'zhs-unified-retry'; retryButton.textContent = '重试启动';
       reloadButton = document.createElement('button'); reloadButton.id = 'zhs-unified-reload'; reloadButton.textContent = '刷新页面';
@@ -39,7 +39,7 @@
   const {GM_getValue,GM_setValue,GM_xmlhttpRequest,GM_registerMenuCommand,GM_setClipboard} = runtime;
 (() => {
   'use strict';
-  const VERSION = '2.1.3';
+  const VERSION = '2.1.5';
   const PLAYBACK_RATE = 1, ADVANCE_WAIT_MS = 5000;
   // 作业页即使被手动配置为匹配，也不注入面板或操作题目。
   if (location.hostname === 'onlineexamh5new.zhihuishu.com') return;
@@ -106,6 +106,7 @@
   // 每个文档独立持有者；刷新及跨域后通过过期租约恢复，不使用页面可写的 window.name。
   const ownerId = runtime.clientId;
   let heartbeatAt = 0, navigationPending = false, blockedAt = 0, waitAt = now();
+  let resumeTimer = null;
   const video = () => all('video').find(visible);
   function patchRun(patch) {
     const fresh = GM_getValue(RUN_KEY, null);
@@ -186,6 +187,7 @@
     tokenCounter++; ctx.token = tokenCounter; cancelAnswerRequest(); video()?.pause(); setStatus(message); record('暂停', {message});
   }
   function resetLocal() {
+    clearTimeout(resumeTimer); resumeTimer = null;
     tokenCounter++; ctx.token = tokenCounter; navigationPending = false; blockedAt = 0; waitAt = now();
     finishState = null; transition = null; playback = null; recoveryMedia = null; popupHold = null; catalogueLoaded = false;
     resetQuestions();
@@ -321,14 +323,30 @@
     if (!Number.isFinite(v.duration) || v.duration <= 0 || !Number.isFinite(v.currentTime) || v.currentTime < 0) return null;
     return Math.min(1, v.currentTime / v.duration);
   }
+  function queuePlaybackCheck(v) {
+    const fresh = GM_getValue(RUN_KEY,null);
+    if (!v?.paused || v.ended || navigationPending || resumeTimer !== null ||
+        !fresh?.enabled || fresh.owner !== ownerId || fresh.id !== run?.id || playback?.awaitingGesture) return;
+    const token = tokenCounter;
+    // 让同一次暂停引出的网页弹窗先显示，同时合并连续到达的媒体事件。
+    const wait = Math.max(250, (playback?.playAt || 0) + 3001 - now());
+    resumeTimer = setTimeout(() => {
+      resumeTimer = null;
+      const current = GM_getValue(RUN_KEY,null);
+      if (token === tokenCounter && current?.enabled && current.id === fresh.id &&
+          current.owner === ownerId && video() === v && v.paused && !v.ended) void tick();
+    }, wait);
+  }
   function observeVideo(v) {
     if (!v || observedVideos.has(v)) return;
     observedVideos.set(v, {loads: 0});
     v.addEventListener('loadstart', () => { observedVideos.get(v).loads++; });
+    for (const event of ['pause','canplay','seeked']) v.addEventListener(event, () => queuePlaybackCheck(v));
     // 新媒体加载或网站重置倍速后重新检查；暂停时tick不会改动播放器。
     for (const event of ['loadedmetadata', 'ratechange']) v.addEventListener(event, () => void tick());
     for (const event of ['loadeddata', 'playing', 'ended', 'error']) {
       v.addEventListener(event, () => {
+        if (event === 'playing' && !v.paused && playback?.video === v) playback.awaitingGesture = false;
         record(`媒体事件：${event}`, {time: Math.round(v.currentTime || 0), ended: v.ended, error: v.error?.code || null});
         if (event === 'ended') void tick();
       });
@@ -1373,6 +1391,31 @@ async function tickSharedPopup(dialog, token) {
     patchRun({recoveryAt: now(), owner: null, leaseUntil: 0});
     record('自动返回上次课程'); await runtime.flush(); navigationPending = true; location.replace(run.courseUrl);
   }
+  async function waitForSavedLesson(v, active, target, token) {
+    if (!v.paused) v.pause();
+    if (!recoveryMedia || recoveryMedia.from !== active.key) {
+      recoveryMedia = {from:active.key, video:v, src:v.currentSrc, loads:observedVideos.get(v).loads, checkAt:now()+2500};
+    }
+    const pending = run.pending;
+    if (run.cursor !== target.key || run.mediaRecovery?.key !== target.key || pending?.kind !== 'lesson' || pending.key !== target.key) {
+      setStatus(`等待恢复 ${target.label}。请在目录选中该小节，加载后会继续播放。`); return;
+    }
+    if (pending.restoreIssued) {
+      setStatus(`已请求返回 ${target.label}。若目录仍未切换，请手动选中该小节。`); return;
+    }
+    setStatus(`待恢复 ${target.label}。请确认扩展图标为 ON，或直接在目录选中该节。`);
+    if (now() < recoveryMedia.checkAt) return;
+    recoveryMedia.checkAt = now() + 5000;
+    if (!await sharedInputEnabled(token) || !isActive(token) || blocker() || currentTask()?.key !== active.key) return;
+    patchRun({pending:{...pending, restoreIssued:true}});
+    record('请求返回停滞前的小节', {from:active.label, to:target.label});
+    try { await sharedInput({kind:'restoreLesson', from:active.key, to:target.key}, token); }
+    catch (error) {
+      if (!isActive(token)) return;
+      record('恢复输入未确认', {message:error.message});
+      setStatus(`请在目录选中 ${target.label}，加载后会继续播放。`);
+    }
+  }
   async function tickCourse(token) {
     if (!sameCourse(location.href, run.courseUrl)) fail('已离开本次课程的学习页面。');
     if (!catalogueLoaded) {
@@ -1423,12 +1466,11 @@ async function tickSharedPopup(dialog, token) {
       if (expected && expected !== active.key) {
         const target = run.tasks.find(t => t.key === expected);
         if (!target) fail('待恢复小节不在目录中。');
-        recoveryMedia = {video:v, src:v.currentSrc, loads:observedVideos.get(v).loads};
-        if (!v.paused) v.pause();
-        setStatus(`等待恢复 ${target.label}。若网页未自动返回，请在目录选中该小节，加载后会继续播放。`);
+        await waitForSavedLesson(v, active, target, token);
         return;
       }
-      if (recoveryMedia && recoveryMedia.video === v && recoveryMedia.src === v.currentSrc && recoveryMedia.loads === observedVideos.get(v).loads) {
+      if (recoveryMedia && (v.readyState < 2 || v.seeking || v.ended ||
+          (recoveryMedia.video === v && recoveryMedia.src === v.currentSrc && recoveryMedia.loads === observedVideos.get(v).loads))) {
         setStatus('已选中待恢复小节，等待对应的视频加载…'); return;
       }
       recoveryMedia = null;
@@ -1484,23 +1526,50 @@ async function tickSharedPopup(dialog, token) {
     }
     finishState = null;
     if (!playback || playback.video !== v || playback.key !== active.key || playback.src !== v.currentSrc || playback.loads !== observedVideos.get(v).loads) playback = {video: v, key: active.key, src: v.currentSrc, loads: observedVideos.get(v).loads, time: v.currentTime, progressAt: now(), playAt: 0};
-    if (Math.abs(v.currentTime - playback.time) > 0.2) { playback.time = v.currentTime; playback.progressAt = now(); playback.retriedInPlace = false; }
-    if (sharedStudy && !v.error && now() - playback.progressAt > 90000 && !playback.retriedInPlace) {
-      playback.retriedInPlace = true; playback.progressAt = now(); playback.playAt = 0;
-      if (!v.paused) v.pause();
-      record('视频停滞，先在当前页恢复播放');
+    if (Math.abs(v.currentTime - playback.time) > 0.2) {
+      playback.time = v.currentTime; playback.progressAt = now(); playback.stallRetryAt = 0; playback.stallRetries = 0;
     }
-    if (v.error || now() - playback.progressAt > 90000) {
+    if (!v.paused) playback.awaitingGesture = false;
+    if (playback.awaitingGesture && !v.error) { setStatus('浏览器要求手动播放。点一下视频播放键，助手会继续本次任务。'); return; }
+    if (sharedStudy && !v.error && !v.seeking && now() - playback.progressAt > 90000 && now() >= (playback.stallRetryAt || 0)) {
+      playback.stallRetries = (playback.stallRetries || 0) + 1;
+      playback.stallRetryAt = now() + Math.min(300000, 90000 * playback.stallRetries);
+      playback.playAt = 0;
+      if (!v.paused) v.pause();
+      record('视频停滞，尝试原位续播', {attempt:playback.stallRetries, time:v.currentTime, readyState:v.readyState, visibility:document.visibilityState});
+    }
+    if (v.error || (!sharedStudy && now() - playback.progressAt > 90000)) {
       const prior = run.mediaRecovery;
       if (prior?.key === active.key && now() - prior.at < 10 * 60000) fail('视频恢复后仍持续加载失败，已暂停。');
       patchRun({mediaRecovery: {key: active.key, at: now()}, pending: {kind: 'lesson', key: active.key, at: now()}});
       record('视频停滞，刷新恢复'); await runtime.flush(); if (!isActive(token)) return; navigationPending = true; location.reload(); return;
     }
-    if (v.paused && now() - playback.playAt > 3000) {
-      await runtime.flush(); if (!isActive(token)) return;
-      playback.playAt = now(); await Promise.race([v.play(), delay(10000)]); if (!isActive(token)) { v.pause(); return; }
+    if (v.paused && !v.seeking && now() - playback.playAt > 3000) {
+      await runtime.flush();
+      if (!isActive(token) || navigationPending || blockedAt || blocker() || video() !== v || !v.paused ||
+          v.ended || v.seeking || v.currentSrc !== playback.src || observedVideos.get(v).loads !== playback.loads ||
+          currentTask()?.key !== active.key || all(SHARED_MODAL+', .ai-class-exercise-dialog').some(visible)) return;
+      playback.playAt = now();
+      try { await Promise.race([v.play(), delay(10000)]); }
+      catch (error) {
+        if (!isActive(token) || video() !== v) return;
+        if (error.name === 'NotAllowedError') {
+          playback.awaitingGesture = true;
+          setStatus('浏览器要求手动播放。点一下视频播放键，助手会继续本次任务。'); return;
+        }
+        if (error.name !== 'AbortError' && error.name !== 'NetworkError' && !v.error) throw error;
+        setStatus('播放暂时中断，正在等待播放器恢复…'); queuePlaybackCheck(v); return;
+      }
+      if (!isActive(token)) {
+        const fresh = GM_getValue(RUN_KEY,null);
+        if (!fresh?.enabled || fresh.owner !== ownerId || blockedAt) v.pause();
+        return;
+      }
     }
     const ratio = videoProgress(v);
+    if (v.paused || (sharedStudy && playback.stallRetries && now() - playback.progressAt > 90000)) {
+      setStatus(`正在原位恢复播放：${active.label}。`); return;
+    }
     setStatus(`正在播放：${active.label} · ${v.playbackRate}倍速${ratio === null ? '' : ' · ' + (ratio * 100).toFixed(1) + '%'}`);
   }
   async function tick() {
@@ -1567,11 +1636,14 @@ async function tickSharedPopup(dialog, token) {
     run = GM_getValue(RUN_KEY,null); ctx.run = run; setStatus(message);
   });
   addEventListener('pagehide', () => {
+    clearTimeout(resumeTimer); resumeTimer = null; navigationPending = true;
     record('页面离开'); cancelAnswerRequest();
     const fresh = GM_getValue(RUN_KEY, null);
     if (fresh?.owner === ownerId) { GM_setValue(RUN_KEY, {...fresh, owner: null, leaseUntil: 0, updatedAt: now()}); }
   });
   addEventListener('pageshow', event => { if (event.persisted) { navigationPending = false; void tick(); } });
+  addEventListener('online', () => queuePlaybackCheck(video()));
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) queuePlaybackCheck(video()); });
   setInterval(heartbeat, 1000);
   setInterval(() => void tick(), 1500);
   setStatus(run?.enabled ? '检测到未完成任务，等待接续…' : (!config.autoSubmit || GM_getValue('apiKey', '') ? '点击开始连续播放，章节测试由你自行完成。' : '请先配置 API Key。'));

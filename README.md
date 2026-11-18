@@ -1,10 +1,10 @@
 # 智慧书刷课助手
 
-[下载最新版安装包](https://github.com/xceanEVERYWHERE/zhihuishu-shuake-zhushou/releases/tag/v2.1.3) · 当前版本 **2.1.3**
+[下载最新版安装包](https://github.com/xceanEVERYWHERE/zhihuishu-shuake-zhushou/releases/download/v2.1.5/zhihuishu-assistant-v2.1.5.zip) · 当前版本 **2.1.5**
 
 一个 Chrome 扩展，提供智慧树课程原速连续播放和 DeepSeek 随堂题辅助。视频完整播放结束后等待 **5 秒**再切下一节，跨章继续播放；**章节测试和考试自行完成**。无需另外安装 Tampermonkey 脚本或辅助扩展。
 
-本次更新修复了同一课程多标签页争抢播放权和本页暂停原因显示错误的问题。共享课遇到短时卡顿会先在原页恢复，弹题输入超时后可手动关窗续播。详见[版本说明](RELEASE_NOTES.md)。
+点一次“开始”后，视频中途意外暂停会从原位置自动续播。网络恢复或播放器重新就绪时，助手会再次检查。需要主动停下请点助手面板的“暂停”。[2.1.5 版本说明](https://github.com/xceanEVERYWHERE/zhihuishu-shuake-zhushou/releases/tag/v2.1.5)
 
 ## 使用前准备
 
@@ -18,7 +18,7 @@
 1. 点击上方链接下载扩展安装 ZIP，解压到准备长期保留的位置。
 2. 在 Chrome 地址栏输入 `chrome://extensions`，打开右上角“开发者模式”。
 3. 点击“加载已解压的扩展程序”，选择解压后的 **zhihuishu-unified** 文件夹。所选文件夹内必须直接看到 `manifest.json`；若下载的是仓库源码，则选择含该文件的源码根目录。
-4. 如安装过旧版智慧树脚本或辅助扩展，请先停用，避免重复运行。打开课程视频页并刷新，等待“一体版 2.1.3”面板出现。
+4. 如安装过旧版智慧树脚本或辅助扩展，请先停用，避免重复运行。打开课程视频页并刷新，等待“一体版 2.1.5”面板出现。
 
 **安装后不要移动或删除这个文件夹**，Chrome 会从中加载扩展。可在浏览器右上角“扩展程序”菜单中固定本扩展，方便找到图标。
 

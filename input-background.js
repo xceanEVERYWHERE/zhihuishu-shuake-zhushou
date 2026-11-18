@@ -137,7 +137,7 @@ async function mouse(b, job, type, point) {
   }
 }
 async function execute(b, job) {
-  await globalThis.ZhsCore.authorizeInput(job.sender);
+  await globalThis.ZhsCore.authorizeInput(job.sender, job.request);
   live(b, job); await currentTab(b); live(b, job);
   job.phase = 'preparing';
   const prepared = await content(b, 'zhs-input-prepare', {request: job.request});
@@ -146,12 +146,13 @@ async function execute(b, job) {
   if (!P.isId(prepared.ticket)) throw Error('输入复核票据无效。');
   job.phase = 'moving'; await mouse(b, job, 'mouseMoved', a);
   live(b, job); await currentTab(b); live(b, job);
-  await globalThis.ZhsCore.authorizeInput(job.sender);
+  await globalThis.ZhsCore.authorizeInput(job.sender, job.request);
   live(b, job);
   const confirmed = await content(b, 'zhs-input-confirm', {ticket: prepared.ticket}, 1200);
   live(b, job); const point = coordinates(confirmed);
   if (!point) return;
   if (Math.abs(a.x - point.x) > 0.75 || Math.abs(a.y - point.y) > 0.75) throw Error('点击前的目标位置发生变化。');
+  if (job.request.kind === 'restoreLesson') await globalThis.ZhsCore.authorizeInput(job.sender, job.request);
   // 最后一次复核后不等待其他动作；按下后不能承诺撤销已经发出的正常输入。
   job.phase = 'pressing'; await mouse(b, job, 'mousePressed', point);
   job.phase = 'releasing'; await mouse(b, job, 'mouseReleased', point);
@@ -186,7 +187,7 @@ async function requestInput(request, sender) {
     return {id: request.id, ok: true, enabled: true};
   }
   if (b.jobs.size >= 16) throw Error('待输入请求过多，请等待当前动作结束。');
-  await globalThis.ZhsCore.authorizeInput(sender);
+  await globalThis.ZhsCore.authorizeInput(sender, request);
   live(b);
   if (b.cancelledIds.has(request.id.toLowerCase())) throw Error('请求已由调用方取消。');
   return new Promise(resolve => {

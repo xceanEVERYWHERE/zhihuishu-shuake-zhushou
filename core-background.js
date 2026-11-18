@@ -186,10 +186,13 @@
       return {ok: true, ...optionsSnapshot()};
     });
   }
-  async function authorize(sender) {
+  async function authorize(sender, request) {
     const page = await verifySender(sender); await ready; await mutations;
     const run = state.values[RUN];
     if (page.home || !run?.enabled || run.complete || run.owner !== sender.documentId || run.leaseUntil <= Date.now() || route(run.courseUrl)?.identity !== page.identity) throw Error('当前文档没有有效的课程运行租约。');
+    if (request?.kind === 'restoreLesson' && (request.from === request.to || run.phase !== 'course' ||
+        run.cursor !== request.to || run.mediaRecovery?.key !== request.to ||
+        run.pending?.kind !== 'lesson' || run.pending.key !== request.to)) throw Error('恢复目标与本次播放保存的小节不一致。');
     return page;
   }
   function aiBody(data) {

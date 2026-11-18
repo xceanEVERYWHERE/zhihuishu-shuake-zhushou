@@ -76,15 +76,19 @@
   function locate(request) {
     if (!P.course(location.href)) throw Error('已离开授权课程地址。');
     blockers();
-    if (request.kind === 'lesson') {
+    if (request.kind === 'lesson' || request.kind === 'restoreLesson') {
+      if (request.kind === 'restoreLesson' && all('.el-dialog, .el-message-box, .masterylevel-body, [role="alertdialog"]').some(visible)) throw Error('请先处理可见弹窗，再恢复小节。');
       if (all('#playTopic-dialog .el-dialog').some(visible)) throw Error('随堂题尚未关闭，未切换视频。');
       const rows = lessons(), current = rows.filter(item => item.row.matches('.current_play') || item.row.querySelector('.current_play'));
       if (current.length !== 1 || current[0].key !== request.from) throw Error('当前视频与请求的起点不一致。');
-      const index = rows.findIndex(item => item === current[0]);
-      if (rows[index + 1]?.key !== request.to) throw Error('只允许切换到目录中紧邻的下一视频。');
       const videos = all('video').filter(visible);
-      if (videos.length !== 1 || videos[0].ended !== true) throw Error('当前视频尚未真实播放结束。');
-      const target = rows[index + 1].row;
+      if (videos.length !== 1) throw Error('未唯一定位当前视频。');
+      if (request.kind === 'lesson') {
+        if (rows[rows.indexOf(current[0]) + 1]?.key !== request.to) throw Error('只允许切换到目录中紧邻的下一视频。');
+        if (!videos[0].ended) throw Error('当前视频尚未真实播放结束。');
+      } else if (!videos[0].paused || request.from === request.to) throw Error('目录恢复前的播放状态已变化。');
+      const target = rows.find(item => item.key === request.to)?.row;
+      if (!target) throw Error('保存的小节已不在当前视频目录中。');
       actionable(target);
       return {element: target, skip: false};
     }
