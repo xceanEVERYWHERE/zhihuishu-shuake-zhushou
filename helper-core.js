@@ -7,7 +7,7 @@
     if (!note) {
       note = document.createElement('div'); note.id = 'zhs-unified-bootstrap'; note.setAttribute('role','status');
       note.style.cssText='position:fixed;top:96px;right:16px;z-index:2147483647;background:#fff4cc;color:#402c00;padding:18px;border-radius:10px;box-shadow:0 4px 18px #0003;width:300px;max-width:calc(100vw - 68px);font:14px/1.7 sans-serif';
-      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 2.1.5';
+      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 2.1.4';
       detail = document.createElement('p'); detail.style.cssText='margin:10px 0';
       retryButton = document.createElement('button'); retryButton.id = 'zhs-unified-retry'; retryButton.textContent = '重试启动';
       reloadButton = document.createElement('button'); reloadButton.id = 'zhs-unified-reload'; reloadButton.textContent = '刷新页面';
@@ -39,7 +39,7 @@
   const {GM_getValue,GM_setValue,GM_xmlhttpRequest,GM_registerMenuCommand,GM_setClipboard} = runtime;
 (() => {
   'use strict';
-  const VERSION = '2.1.5';
+  const VERSION = '2.1.4';
   const PLAYBACK_RATE = 1, ADVANCE_WAIT_MS = 5000;
   // 作业页即使被手动配置为匹配，也不注入面板或操作题目。
   if (location.hostname === 'onlineexamh5new.zhihuishu.com') return;
@@ -161,7 +161,7 @@
     <label><input id="mute" type="checkbox"> 静音播放</label>
     <label><input id="next" type="checkbox"> 播完自动下一节</label>
     <label><input id="autoSubmit" type="checkbox"> 自动选择并提交随堂弹题</label>
-    <small>视频以原速（1倍速）完整播放，结束后等待5秒再切下一节。章节测试由你自行完成，学习完成状态以网站记录为准。${sharedStudy ? '共享课自动弹题与自动切课前，请点击本扩展图标，确认显示 ON。' : ''}随堂弹题会向 DeepSeek 发送题目文字和选项，按其规则计费。AI 可能答错。登录、安全验证和未适配题型需人工处理。</small>
+    <small>视频原速播完，5 秒后切到下一节。章节测试手动完成，进度以网站记录为准。${sharedStudy ? '共享课自动弹题和切课需要扩展图标显示 ON。' : ''}配置密钥后，随堂题文字和选项会发给 DeepSeek，可能产生费用。无密钥、无可用答案或等待达 8 秒时，单选随机选 1 项，多选随机选 2 项。登录、验证和未适配题型需手动处理。</small>
     <pre id="question">等待题目</pre><button id="copy">复制题目</button><button id="diagnostic">复制诊断</button><button id="locateBlocker">定位验证</button></div></section>`;
   const uiEl = id => ui.getElementById(id);
   function setStatus(message) { uiEl('status').textContent = message; updateCourseNotice(); }
@@ -197,7 +197,6 @@
       if (busy) { setStatus('正在取消上一操作，请稍候再开始。'); return; }
       if (!courseUrl(location.href)) fail('请在具体课程的视频学习页点击开始。');
       refreshConfig();
-      if (config.autoSubmit && !GM_getValue('apiKey', '').trim()) fail('请先配置 DeepSeek API Key。');
       const existing = GM_getValue(RUN_KEY, null);
       const resumable = existing && sameCourse(existing.courseUrl, location.href) && !existing.complete;
       const checkpoint = resumable ? (sharedStudy ? {...videoCheckpoint(existing), cursor: null, pending: null} : videoCheckpoint(existing)) : {};
@@ -365,15 +364,17 @@
       return runtime.modernNavigation({kind:'next',from:status.currentKey,to:status.nextKey});
     }}};
   }
-  function checkNextLesson(previous, target) {
-    if (!previous) fail('尚未识别当前小节，未执行切课。');
-    // 同时核对已记录和当前 DOM 目录，不能把“下一节”接口用于任意跳课或恢复远处小节。
+  function isAdjacentLesson(previous, target) {
     const live = chapterGroups().flatMap(tasksForGroup).filter(t => t.kind === 'lesson');
     const saved = run.tasks.filter(t => t.kind === 'lesson');
-    for (const lessons of [saved, live]) {
+    return [saved, live].every(lessons => {
       const index = lessons.findIndex(t => t.key === previous.key);
-      if (index < 0 || lessons[index + 1]?.key !== target.key) fail(`待恢复的 ${target.label} 不是当前小节的下一节，请手动选中该小节后点击开始。`);
-    }
+      return index >= 0 && lessons[index + 1]?.key === target.key;
+    });
+  }
+  function checkNextLesson(previous, target) {
+    if (!previous) fail('尚未识别当前小节，未执行切课。');
+    if (!isAdjacentLesson(previous, target)) fail(`待恢复的 ${target.label} 不是当前小节的下一节，请手动选中该小节后点击开始。`);
     if (previous.chapter !== target.chapter) {
       if (target.chapter !== previous.chapter + 1) fail('章节目录不连续，未执行跨章切课。');
       // 当前网站 nextVideo 的普通课章末分支不能正确处理下一章首课为分组的情况。
@@ -418,20 +419,58 @@
           !Object.is(v.duration, mediaBeforeInput.duration)) fail('等待辅助扩展期间当前小节或视频已变化，未执行切课。');
       checkNextLesson(current, target);
     }
-    transition = {at: now(), key: task.key, previous: previous?.key, video: v, src: v?.currentSrc, loads: v ? observedVideos.get(v).loads : 0};
+    const move = {at: now(), key: task.key, previous: previous.key, video: v, src: v.currentSrc, loads: observedVideos.get(v).loads, duration:v.duration};
+    transition = move;
     patchRun({phase: 'course', resumeAfter: null, pending});
     record('调用播放器下一节', {method: api.method, from: previous.label, to: task.label});
     // 使用对应站点的正常播放入口，保留原站保存、权限和验证流程。
-    // 此方法无成功返回值，必须由 tickCourse 核对新媒体和目标目录，不能自动重发。
+    // 输入完成与切课完成分开确认。只有目标目录与新媒体都出现才更新播放位置。
     try { await Reflect.apply(api.exposed.nextVideo, api.exposed, []); }
     catch (error) {
       if (sharedStudy && error.inputUnconfirmed && isActive(token)) {
+        record('共享课切课输入结果未确认', {message:error.message});
         setStatus('切课输入尚未确认，正在等待网页显示目标小节。'); return;
       }
       fail(sharedStudy ? error.message : '播放器 nextVideo 调用失败，已停止；请复制诊断。');
     }
-    if (!isActive(token)) return;
+    if (!isActive(token) || transition !== move) return;
+    if (sharedStudy) { move.acknowledged = true; record('共享课切课输入已返回', {to:task.label}); }
     finishState = null; playback = null; setStatus(`正在加载 ${task.label}…`);
+  }
+  async function waitForSharedTransition(move, active, v, token) {
+    const target = run.tasks.find(task => task.key === move.key);
+    const label = target?.label || '目标小节';
+    const waitMessage = `等待网页切到 ${label}。也可在目录手动选中，加载后会自动续播。`;
+    const enableMessage = `请点扩展图标启用本页（ON），以重试切到 ${label}。也可在目录手动选中该节。`;
+    setStatus(move.needsInput && !move.sawChange ? enableMessage : waitMessage);
+    if (!move.timeoutLogged) {
+      record('共享课切换超过45秒', {current:active?.label ?? null, target:label, ended:v?.ended ?? null, readyState:v?.readyState ?? null,
+        acknowledged:!!move.acknowledged, sawChange:!!move.sawChange});
+      move.timeoutLogged = true;
+    }
+    if (!config.next || !v || !active || !target || !move.acknowledged || move.sawChange || move.retried ||
+        run.pending?.key !== move.key || now() < (move.checkAt || 0)) return;
+    move.checkAt = now() + 5000;
+    const enabled = await sharedInputEnabled(token);
+    if (!isActive(token) || !config.next || transition !== move || run.pending?.key !== move.key) return;
+    move.needsInput = !enabled;
+    if (!enabled) { setStatus(enableMessage); return; }
+    const containers = all('#container').filter(visible);
+    if (video() !== move.video || v !== move.video ||
+        currentTask()?.key !== move.previous || !v.ended || v.seeking || v.error || v.currentSrc !== move.src ||
+        observedVideos.get(v).loads !== move.loads || !Object.is(v.duration,move.duration) ||
+        containers.length !== 1 || !containers[0].contains(v) || blocker() ||
+        all(SHARED_MODAL+', [role="alertdialog"]').some(visible) || !isAdjacentLesson(active, target)) return;
+    move.retried = true;
+    setStatus(waitMessage);
+    record('原视频仍在结尾，重选同一相邻小节', {from:active.label, to:target.label});
+    try {
+      await sharedInput({kind:'lesson', from:move.previous, to:move.key}, token);
+      if (isActive(token)) record('重选小节输入已返回', {to:label});
+    }
+    catch (error) {
+      if (isActive(token)) record('重选小节未确认', {message:error.message});
+    }
   }
   async function advanceAfter(key, token) {
     const index = run.tasks.findIndex(t => t.key === key);
@@ -653,12 +692,18 @@ function qaCurrent(root, expected, kind, token) {
       if (q.key === expected.key) matches.push({root: candidate, q});
     } catch (_) { /* 其他弹窗不参与重新定位。 */ }
   }
+  if (kind === 'popup' && !matches.length && !visible(root)) {
+    const error = new Error('原随堂题已离开，已取消旧答案。');
+    error.popupGone = true;
+    throw error;
+  }
   if (matches.length !== 1) fail('原题已消失或重新定位结果不唯一，已取消旧答案。');
   return matches[0];
 }
 
 function qaError(message, retryable = false, retryAfter = 0) {
   const error = new Error(message);
+  error.name = 'AIAnswerError';
   error.retryable = retryable;
   error.retryAfter = retryAfter;
   return error;
@@ -677,7 +722,7 @@ function qaValidate(raw, q) {
   let data;
   try { data = JSON.parse(raw); } catch (_) { throw qaError('AI 返回的 JSON 不完整。', true); }
   if (!data || !Array.isArray(data.answers)) throw qaError('AI 返回缺少 answers 数组。', true);
-  if (!data.answers.length) throw qaError('AI 无法确定这道题的答案，未选择或提交。');
+  if (!data.answers.length) throw qaError('AI 未能确定答案。');
   if (!data.answers.every(value => typeof value === 'string' && /^[A-J]$/.test(value))) throw qaError('AI 答案不是有效选项字母。', true);
   const indices = data.answers.map(value => value.charCodeAt(0) - 65);
   if (new Set(indices).size !== indices.length || indices.some(index => index >= q.options.length) || (q.type === 'single' && indices.length !== 1)) {
@@ -700,21 +745,26 @@ function cancelAnswerRequest() {
   }
 }
 
-function qaCall(q, token, attempt, model) {
+function qaCall(q, token, attempt, model, forPopup) {
   qaEnsureActive(token);
   const apiKey = String(GM_getValue('apiKey', '') || '').trim();
   if (!apiKey) fail('请先配置 DeepSeek API Key。');
   if (qaRequest) fail('上一条 AI 请求尚未结束，已阻止重复请求。');
   return new Promise((resolve, reject) => {
-    let settled = false;
-    const entry = {handle: null, cancel: () => finish(qaError('AI 请求已取消。'))};
+    let settled = false, timer;
+    const entry = {handle: null, cancel: () => finish(new Error('AI 请求已取消。'))};
     function finish(error, result) {
       if (settled) return;
       settled = true;
+      clearTimeout(timer);
       if (qaRequest === entry) qaRequest = null;
       if (error) reject(error); else resolve(result);
     }
     qaRequest = entry;
+    if (forPopup) timer = setTimeout(() => {
+      finish(qaError('随堂题等待 AI 已达 8 秒。'));
+      entry.handle?.abort();
+    }, 8000);
     try {
       entry.handle = GM_xmlhttpRequest({
         method: 'POST', url: 'https://api.deepseek.com/chat/completions', anonymous: true, timeout: 120000,
@@ -728,7 +778,7 @@ function qaCall(q, token, attempt, model) {
           ],
         }),
         onload: response => {
-          if (!isActive(token)) { finish(qaError('运行状态已变化，已丢弃 AI 响应。')); return; }
+          if (!isActive(token)) { finish(new Error('运行状态已变化，已丢弃 AI 响应。')); return; }
           if (response.status !== 200) {
             const messages = {400: 'DeepSeek 请求格式错误。', 401: 'DeepSeek API Key 无效。', 402: 'DeepSeek 账户余额不足。', 404: 'DeepSeek 模型或接口不存在。', 422: 'DeepSeek 请求参数不受支持。', 429: 'DeepSeek 请求受限。'};
             const transient = [0, 408, 425, 429].includes(response.status) || response.status >= 500;
@@ -749,15 +799,30 @@ function qaCall(q, token, attempt, model) {
         },
         onerror: () => finish(qaError('DeepSeek 网络连接失败。', true)),
         ontimeout: () => finish(qaError('DeepSeek 请求超时。', true)),
-        onabort: () => finish(qaError('AI 请求已取消。')),
+        onabort: () => finish(new Error('AI 请求已取消。')),
       });
     } catch (error) { finish(error); }
   });
 }
 
-async function qaAnswer(q, token, check = null) {
+function popupFallback(q, reason) {
+  const remaining = q.options.map((_, index) => index);
+  const count = q.type === 'multiple' ? 2 : 1;
+  const indices = [];
+  while (indices.length < count) {
+    indices.push(remaining.splice(Math.floor(Math.random() * remaining.length), 1)[0]);
+  }
+  indices.sort((a,b) => a-b);
+  record('随堂题已使用备用选项', {type:q.type, count, reason});
+  return {indices, fallback:true, confidence:0, reason};
+}
+
+async function qaAnswer(q, token, check, kind) {
   qaEnsureActive(token);
   if (check) check();
+  const forPopup = kind === 'popup';
+  if (forPopup && (!config.autoSubmit || blocker())) fail('弹题操作已暂停。');
+  if (forPopup && !GM_getValue('apiKey', '')) return popupFallback(q, '未配置 AI 密钥。');
   const model = String(config.model || 'deepseek-flash').trim() || 'deepseek-flash';
   const cacheKey = JSON.stringify([model, q.type, q.title, q.options]);
   const epoch = qaRequestEpoch;
@@ -772,7 +837,7 @@ async function qaAnswer(q, token, check = null) {
     if (epoch !== qaRequestEpoch) fail('AI 请求已取消。');
     setStatus(`DeepSeek 正在解答${attempt ? `，第 ${attempt + 1}/3 次尝试` : ''}…`);
     try {
-      const result = await qaCall(q, token, attempt, model);
+      const result = await qaCall(q, token, attempt, model, forPopup);
       qaEnsureActive(token);
       if (check) check();
       if (epoch !== qaRequestEpoch) fail('AI 请求已取消。');
@@ -782,6 +847,11 @@ async function qaAnswer(q, token, check = null) {
     } catch (error) {
       qaEnsureActive(token);
       if (epoch !== qaRequestEpoch) fail('AI 请求已取消。');
+      if (forPopup) {
+        if (error.name !== 'AIAnswerError' || !config.autoSubmit || blocker()) throw error;
+        check();
+        return popupFallback(q, error.message);
+      }
       if (!error.retryable || attempt === 2) throw error;
       const wait = Math.max(error.retryAfter || 0, [2000, 5000][attempt] + Math.floor(Math.random() * 500));
       record('AI 暂时失败，准备重试', {attempt: attempt + 1, waitMs: wait, message: error.message});
@@ -797,10 +867,10 @@ async function answerQuestion(root, kind = 'popup', token) {
   const q = readQuestion(root, kind);
   showQuestion(qaFormat(q));
   const check = () => { root = qaCurrent(root, q, kind, token).root; };
-  const result = await qaAnswer(q, token, check);
+  const result = await qaAnswer(q, token, check, kind);
   let current = qaCurrent(root, q, kind, token);
   root = current.root;
-  showQuestion(qaFormat(q) + '\n\n建议：' + result.indices.map(index => String.fromCharCode(65 + index)).join('、') + '\n' + result.reason);
+  showQuestion(qaFormat(q) + (result.fallback ? '\n\n备用选择：' : '\n\n建议：') + result.indices.map(index => String.fromCharCode(65 + index)).join('、') + '\n' + result.reason);
   if (!config.autoSubmit) fail('已生成答案建议；自动选择和提交已关闭。');
   const wanted = index => result.indices.includes(index);
   for (let pass = 0; pass < 2; pass++) {
@@ -944,6 +1014,10 @@ async function tickPopup(dialog, token) {
     }
     setStatus('本次输入未确认，请手动处理当前弹窗。关窗后会继续播放。');
     return {handled:true, phase:'manual-input'};
+  }
+  if (!config.autoSubmit) {
+    setStatus('自动作答已关闭，等待你完成随堂弹题后继续播放。');
+    return {handled:true, phase:'manual'};
   }
   if (qaPopupLoadingAt === null) qaPopupLoadingAt = now();
   let snapshot;
@@ -1183,7 +1257,7 @@ async function tickSharedPopup(dialog, token) {
       return {handled: true, phase: 'waiting-extension'};
     }
     const check = () => qaCurrent(dialog, q, 'popup', token);
-    const answer = await qaAnswer(q, token, check);
+    const answer = await qaAnswer(q, token, check, 'popup');
     check();
     const selected = q.options.map((_, index) => answer.indices.includes(index));
     // 多选每次点击都会触发网站保存。逐项等待选中状态，未知结果不重放点击。
@@ -1205,7 +1279,7 @@ async function tickSharedPopup(dialog, token) {
     const current = check().q;
     if (!current.elements.every((el, i) => qaSelected(el) === selected[i])) fail('随堂弹题最终选中状态与答案不一致，已暂停。');
     state.selected = selected; state.phase = 'verify'; state.at = now();
-    setStatus('已核对随堂弹题选项，等待页面处理…'); return {handled: true, phase: 'verify'};
+    setStatus(answer.fallback ? '已使用备用选项，等待关窗后续播…' : '已核对随堂弹题选项，等待页面处理…'); return {handled: true, phase: 'verify'};
   }
   if (state.phase === 'verify') {
     if (!q.elements.every((el, i) => qaSelected(el) === state.selected[i])) fail('选项在核对后发生变化，未继续翻页。');
@@ -1429,7 +1503,13 @@ async function tickSharedPopup(dialog, token) {
         (modern || el.querySelector('.topic-item') || el.querySelector('.answer')));
     if (popup) {
       if (!popupHold) popupHold = {at: now(), transition, transitionAt: transition?.at, finishState, finishAt: finishState?.at};
-      video()?.pause(); await tickPopup(popup, token); return;
+      video()?.pause();
+      try { await tickPopup(popup, token); }
+      catch (error) {
+        if (!error.popupGone || visible(popup)) throw error;
+        await tickPopup(null, token);
+      }
+      return;
     }
     const popupResult = await tickPopup(null, token);
     if (popupHold) {
@@ -1454,12 +1534,24 @@ async function tickSharedPopup(dialog, token) {
     const v = video();
     const loadingSince = transition?.at ?? Math.max(waitAt, run.pending?.kind === 'lesson' ? run.pending.at || 0 : 0);
     if (!v) {
+      if (sharedStudy && transition) {
+        transition.sawChange = true;
+        if (now() - loadingSince > 45000) await waitForSharedTransition(transition,null,null,token);
+        else setStatus('等待目标小节的视频加载…');
+        return;
+      }
       if (now() - loadingSince > (transition ? 45000 : 60000)) fail(transition ? '切课 45 秒后仍未出现可见视频，已暂停且未重复调用。' : '60 秒内未出现可见视频。');
       setStatus('等待视频加载…'); return;
     }
     observeVideo(v);
     const active = currentTask();
-    if (!active) { if (now() - loadingSince > 45000) fail('45 秒内未识别目录中的当前小节，已暂停。'); setStatus('等待当前课程标记…'); return; }
+    if (!active) {
+      if (sharedStudy && transition) {
+        transition.sawChange = true;
+        if (now() - loadingSince > 45000) { await waitForSharedTransition(transition,null,v,token); return; }
+      } else if (now() - loadingSince > 45000) fail('45 秒内未识别目录中的当前小节，已暂停。');
+      setStatus('等待当前课程标记…'); return;
+    }
     if (!run.tasks.some(t => t.key === active.key)) fail('当前小节不在已记录的课程目录中。');
     if (sharedStudy && !transition && !playback && !finishState) {
       const expected = run.pending?.kind === 'lesson' ? run.pending.key : run.cursor;
@@ -1500,6 +1592,11 @@ async function tickSharedPopup(dialog, token) {
       if (active.key === transition.key && changed && v.readyState >= 2 && !v.ended && !v.seeking) {
         record('目录与新视频已确认'); transition = null; finishState = null; playback = null; patchRun({pending: null, cursor: active.key});
       } else {
+        if (sharedStudy) {
+          if (changed || active.key !== transition.previous || !v.ended || v.seeking || v.error ||
+              !Object.is(v.duration,transition.duration)) transition.sawChange = true;
+          if (now() - transition.at > 45000) { await waitForSharedTransition(transition,active,v,token); return; }
+        }
         if (now() - transition.at > 45000) fail('切课 45 秒后仍未确认目标目录和新视频，已暂停且未重复调用。请复制诊断。');
         setStatus('等待目标小节与新视频同时加载…'); return;
       }
@@ -1646,7 +1743,7 @@ async function tickSharedPopup(dialog, token) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden) queuePlaybackCheck(video()); });
   setInterval(heartbeat, 1000);
   setInterval(() => void tick(), 1500);
-  setStatus(run?.enabled ? '检测到未完成任务，等待接续…' : (!config.autoSubmit || GM_getValue('apiKey', '') ? '点击开始连续播放，章节测试由你自行完成。' : '请先配置 API Key。'));
+  setStatus(run?.enabled ? '检测到未完成任务，等待接续…' : '点击开始连续播放，章节测试由你自行完成。');
   if (homePage) void recoverHome().catch(e => setStatus(e.message)); else void tick();
 })();
 

@@ -12,6 +12,10 @@
       return {href: url.href, courseId: ids[0]};
     } catch (_) { return null; }
   }
+  function sameCourse(left, right) {
+    const first = course(left);
+    return !!first && course(right)?.courseId === first.courseId;
+  }
   function signature(value) {
     if (typeof value !== 'string' || value.length > 30000) return false;
     try {
@@ -46,5 +50,5 @@
         request.cancelId.toLowerCase() === request.id.toLowerCase())) throw Error('取消请求的目标 ID 无效。');
     return Object.fromEntries(allowed.map(key => [key, Array.isArray(request[key]) ? [...request[key]] : request[key]]));
   }
-  globalThis.ZhsInputProtocol = Object.freeze({course, validate, isId: value => typeof value === 'string' && UUID.test(value)});
+  globalThis.ZhsInputProtocol = Object.freeze({course, sameCourse, validate, isId: value => typeof value === 'string' && UUID.test(value)});
 })();

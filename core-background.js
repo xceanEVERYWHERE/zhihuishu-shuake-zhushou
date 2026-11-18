@@ -32,9 +32,10 @@
   }
   function basicSender(sender) {
     if (sender?.id !== chrome.runtime.id || !Number.isInteger(sender.tab?.id) || sender.frameId !== 0 ||
-        typeof sender.documentId !== 'string' || !sender.documentId || sender.tab.url !== sender.url ||
+        typeof sender.documentId !== 'string' || !sender.documentId ||
+        (sender.tab.url !== sender.url && !globalThis.ZhsInputProtocol.sameCourse(sender.url, sender.tab.url)) ||
         (sender.documentLifecycle && sender.documentLifecycle !== 'active')) throw Error('仅允许当前学习页的顶层扩展脚本访问。');
-    const page = route(sender.url); if (!page) throw Error('当前地址不属于支持的学习页面。');
+    const page = route(sender.tab.url); if (!page) throw Error('当前地址不属于支持的学习页面。');
     return page;
   }
   async function verifySender(sender) {
@@ -42,13 +43,13 @@
     if (revoked.has(key)) throw Error('此文档已经导航离开，访问已取消。');
     const tab = await chrome.tabs.get(sender.tab.id);
     if (revoked.has(key) || (tabEpoch.get(sender.tab.id) || 0) !== epoch) throw Error('页面在请求期间发生导航。');
-    if (!tab || tab.url !== sender.url) throw Error('文档已导航，访问已取消。');
+    if (!tab || tab.url !== page.href) throw Error('文档已导航，访问已取消。');
     if (tab.status === 'loading') {
       // document_idle 可能早于标签完成加载；仅同一有效文档的这种情况允许初始化重试。
       const error = Error('当前文档仍在加载，请稍后重试。');
       error.code = 'DOCUMENT_LOADING'; error.retryable = true; throw error;
     }
-    clients.set(key, {tabId: sender.tab.id, documentId: sender.documentId, url: sender.url});
+    clients.set(key, {tabId: sender.tab.id, documentId: sender.documentId, url: page.href});
     return page;
   }
   function visibleValue(key) { return key === 'apiKey' ? (state.apiKey ? 'configured' : '') : clone(state.values[key] ?? (key === TRACE ? [] : null)); }
@@ -280,5 +281,8 @@
       ...(error?.code === 'DOCUMENT_LOADING' && error.retryable === true ? {code: 'DOCUMENT_LOADING', retryable: true} : {})}));
     return true;
   });
-  globalThis.ZhsCore = Object.freeze({authorizeInput: authorize});
+  // 同页地址变化也可能触发 loading。输入后台已向当前顶层文档重新握手并核对 documentId。
+  globalThis.ZhsCore = Object.freeze({authorizeInput: authorize, confirmCurrentDocument(tabId, documentId) {
+    revoked.delete(tabId + ':' + documentId);
+  }});
 })();

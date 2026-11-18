@@ -11,12 +11,12 @@ const delay = (promise, ms, label) => new Promise((resolve, reject) => {
 const messageError = error => String(error?.message || error).slice(0, 240);
 function senderPage(sender) {
   if (sender.id !== chrome.runtime.id || !Number.isInteger(sender.tab?.id) || sender.frameId !== 0 ||
-      typeof sender.documentId !== 'string' || !sender.documentId || !P.course(sender.url) ||
-      sender.tab.url !== sender.url) throw Error('消息来源不是合法的共享课顶层文档。');
+      typeof sender.documentId !== 'string' || !sender.documentId || !P.sameCourse(sender.url, sender.tab.url) ||
+      (sender.documentLifecycle && sender.documentLifecycle !== 'active')) throw Error('消息来源不是合法的共享课顶层文档。');
   return sender;
 }
 function isBound(b, sender) {
-  return b && !b.cancelled && sender.tab.id === b.tabId && sender.documentId === b.documentId && sender.url === b.url;
+  return b && !b.cancelled && sender.tab.id === b.tabId && sender.documentId === b.documentId && sender.tab.url === b.url;
 }
 function live(b, job) {
   if (binding !== b || b.cancelled || b.phase !== 'enabled') throw Error('此标签的输入授权已关闭。');
@@ -34,16 +34,19 @@ function finish(b, job, ok, error) {
   job.settled = true; clearTimeout(job.timer); b.jobs.delete(job.request.id.toLowerCase());
   job.resolve({id: job.request.id, ok, ...(error ? {error} : {}), enabled: binding === b && b.phase === 'enabled' && !b.cancelled});
 }
-async function disarm(b, reason, detached = false) {
-  if (!b || b.cancelled) return;
-  b.cancelled = true; if (binding === b) binding = null;
+function cancelDocument(b, reason) {
+  b.cancelled = true;
   for (const job of b.jobs.values()) { job.cancelled = true; finish(b, job, false, reason); }
   b.queue.length = 0;
+  if (b.documentId) void content(b, 'zhs-input-disarm', {}, 800).catch(() => {});
+}
+async function disarm(b, reason, detached = false, badgeText = '') {
+  if (!b || b.cancelled) return;
+  if (binding === b) binding = null;
+  cancelDocument(b, reason);
   const cleanup = [];
-  if (b.documentId) cleanup.push(delay(chrome.tabs.sendMessage(b.tabId, {type: 'zhs-input-disarm', nonce: b.nonce},
-    {frameId: 0, documentId: b.documentId}), 800, '关闭授权'));
   if (b.attached && !detached) cleanup.push(delay(chrome.debugger.detach({tabId: b.tabId}), 1000, '解除调试连接'));
-  cleanup.push(badge(b.tabId, '', '共享课正常输入：点击开启当前标签'));
+  cleanup.push(badge(b.tabId, badgeText, reason + ' 点击图标可重新开启。'));
   await Promise.allSettled(cleanup);
 }
 async function currentTab(b) {
@@ -55,6 +58,52 @@ function content(b, type, extra = {}, timeout = 2000) {
   return delay(chrome.tabs.sendMessage(b.tabId, {type, nonce: b.nonce, ...extra},
     {frameId: 0, documentId: b.documentId}), timeout, '页面复核');
 }
+function newBinding(tabId, course) {
+  return {tabId, url:course.href, courseId:course.courseId, nonce:crypto.randomUUID(), documentId:null,
+    phase:'binding', attached:false, cancelled:false, jobs:new Map(), cancelledIds:new Set(), queue:[], draining:false};
+}
+async function bindDocument(b) {
+  const resuming = b.attached;
+  try {
+    if (b.releaseAck) {
+      await b.releaseAck;
+      if (binding !== b || b.cancelled) return;
+      b.releaseAck = null;
+    }
+    // 由内容脚本回信的浏览器 sender.documentId 确定顶层文档，页面无法提供此标识。
+    let ack;
+    for (let attempt = 0; ; attempt++) {
+      await currentTab(b);
+      if (binding !== b || b.cancelled) return;
+      try {
+        ack = await delay(chrome.tabs.sendMessage(b.tabId, {type:'zhs-input-bind', nonce:b.nonce, href:b.url}, {frameId:0}), 2500, '绑定文档');
+        break;
+      } catch (error) {
+        if (!resuming || attempt >= 4 || !/receiving end does not exist/i.test(messageError(error))) throw error;
+        await new Promise(resolve => setTimeout(resolve, 200 * (attempt + 1)));
+      }
+    }
+    if (!ack?.ok || !b.documentId || binding !== b || b.cancelled) throw Error(ack?.error || '当前文档绑定已失效。');
+    await currentTab(b);
+    if (binding !== b || b.cancelled) throw Error('开启前已离开课程页。');
+    if (!resuming) {
+      const attaching = chrome.debugger.attach({tabId: b.tabId}, '1.3').then(async () => {
+        b.attached = true;
+        if (binding !== b || b.cancelled) await chrome.debugger.detach({tabId: b.tabId}).catch(() => {});
+      });
+      await delay(attaching, 2500, '开启正常输入');
+    }
+    if (binding !== b || b.cancelled) return;
+    await currentTab(b);
+    const check = await content(b, 'zhs-input-check');
+    if (!check?.ok || check.nonce !== b.nonce || check.href !== b.url || binding !== b || b.cancelled) throw Error('授权期间页面发生变化。');
+    if (resuming && b.previousDocumentId === b.documentId) globalThis.ZhsCore.confirmCurrentDocument(b.tabId, b.documentId);
+    b.phase = 'enabled'; await badge(b.tabId, 'ON', '共享课正常输入已开启：点击关闭当前标签');
+  } catch (error) {
+    if (binding !== b || b.cancelled) return;
+    await disarm(b, '开启失败：' + messageError(error), false, '!');
+  }
+}
 async function enable(tab) {
   if (binding?.tabId === tab.id) { await disarm(binding, '用户关闭了输入授权。'); return; }
   if (binding) await disarm(binding, '用户改为授权另一个标签。');
@@ -63,39 +112,45 @@ async function enable(tab) {
     if (Number.isInteger(tab.id)) await badge(tab.id, '!', '请先打开共享课 stuStudy 课程页，再点击扩展图标。');
     return;
   }
-  const b = {tabId: tab.id, url: course.href, courseId: course.courseId, nonce: crypto.randomUUID(), documentId: null,
-    phase: 'binding', attached: false, cancelled: false, jobs: new Map(), cancelledIds: new Set(), queue: [], draining: false};
-  binding = b;
-  try {
-    // 由内容脚本回信的浏览器 sender.documentId 确定顶层文档，页面无法提供此标识。
-    const ack = await delay(chrome.tabs.sendMessage(b.tabId, {type: 'zhs-input-bind', nonce: b.nonce, href: b.url}, {frameId: 0}), 2500, '绑定文档');
-    if (!ack?.ok || !b.documentId || binding !== b || b.cancelled) throw Error(ack?.error || '当前文档绑定已失效。');
-    await currentTab(b);
-    if (binding !== b || b.cancelled) throw Error('开启前已离开课程页。');
-    const attaching = chrome.debugger.attach({tabId: b.tabId}, '1.3').then(async () => {
-      b.attached = true;
-      if (binding !== b || b.cancelled) await chrome.debugger.detach({tabId: b.tabId}).catch(() => {});
-    });
-    await delay(attaching, 2500, '开启正常输入');
-    if (binding !== b || b.cancelled) {
-      await chrome.debugger.detach({tabId: b.tabId}).catch(() => {}); return;
-    }
-    await currentTab(b);
-    const check = await content(b, 'zhs-input-check');
-    if (!check?.ok || check.nonce !== b.nonce || check.href !== b.url || binding !== b || b.cancelled) throw Error('授权期间页面发生变化。');
-    b.phase = 'enabled'; await badge(b.tabId, 'ON', '共享课正常输入已开启：点击关闭当前标签');
-  } catch (error) {
-    await disarm(b, messageError(error));
-    await badge(b.tabId, '!', '开启失败：' + messageError(error));
+  binding = newBinding(tab.id, course);
+  await bindDocument(binding);
+}
+function waitForDocument(b) {
+  if (b.phase === 'waiting') return b;
+  if (!b.attached || (b.phase !== 'enabled' && !b.previousDocumentId) ||
+      b.active?.phase === 'pressing') {
+    void disarm(b, '页面在开启授权或执行点击时发生导航。');
+    return null;
   }
+  const next = newBinding(b.tabId, {href:b.url, courseId:b.courseId});
+  next.previousDocumentId = b.documentId || b.previousDocumentId;
+  // 一次正常的鼠标松开也可能触发导航。新文档须等原命令确认，不能补发点击。
+  next.releaseAck = b.releaseAck;
+  next.phase = 'waiting';
+  next.attached = true;
+  binding = next;
+  cancelDocument(b, '页面已切换，旧输入已取消。');
+  void badge(next.tabId, '…', '正在等待同一课程页加载并核对输入授权');
+  return next;
 }
 chrome.action.onClicked.addListener(tab => {
   actionQueue = actionQueue.then(() => enable(tab)).catch(() => {});
 });
-chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
-  if (changeInfo.status === 'loading' || Object.hasOwn(changeInfo, 'url')) {
-    if (binding?.tabId === tabId) void disarm(binding, '页面已导航，输入授权已关闭。');
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  let b = binding;
+  if (b?.tabId !== tabId) return;
+  const hasUrl = Object.hasOwn(changeInfo, 'url');
+  if (!hasUrl && !['loading','complete'].includes(changeInfo.status)) return;
+  const url = hasUrl ? changeInfo.url : tab?.url;
+  if ((url !== undefined && P.course(url)?.courseId !== b.courseId) ||
+      (tab?.pendingUrl && P.course(tab.pendingUrl)?.courseId !== b.courseId)) {
+    void disarm(b, '已离开授权的课程。'); return;
   }
+  if (changeInfo.status === 'loading' || (hasUrl && url !== b.url)) b = waitForDocument(b);
+  if (!b || b.phase !== 'waiting' || (changeInfo.status || tab?.status) !== 'complete') return;
+  if (P.course(url)?.courseId !== b.courseId) { void disarm(b, '新页面未能确认为同一课程。'); return; }
+  b.url = url; b.phase = 'binding';
+  void bindDocument(b);
 });
 chrome.tabs.onRemoved.addListener(tabId => {
   for (const key of documents.keys()) if (key.startsWith(tabId + ':')) documents.delete(key);
@@ -127,14 +182,17 @@ async function mouse(b, job, type, point) {
   // 坐标来自隔离内容脚本的两次定位，单位为 CSS 像素；页面不能指定命令或坐标。
   const pressed = type === 'mousePressed';
   try {
-    await delay(chrome.debugger.sendCommand({tabId: b.tabId}, 'Input.dispatchMouseEvent', {
+    const confirmed = delay(chrome.debugger.sendCommand({tabId: b.tabId}, 'Input.dispatchMouseEvent', {
       type, x: point.x, y: point.y, button: type === 'mouseMoved' ? 'none' : 'left',
       buttons: pressed ? 1 : 0, ...(type === 'mouseMoved' ? {} : {clickCount: 1}), pointerType: 'mouse'
     }), 4000, '鼠标输入');
+    if (type === 'mouseReleased') b.releaseAck = confirmed;
+    await confirmed;
   } catch (error) {
-    await disarm(b, '鼠标输入未确认完成，授权已关闭；请人工检查页面。' + messageError(error));
+    const owner = b.releaseAck && binding?.releaseAck === b.releaseAck ? binding : b;
+    if (type !== 'mouseMoved') await disarm(owner, '鼠标点击未确认完成，授权已关闭。' + messageError(error));
     throw error;
-  }
+  } finally { if (type === 'mouseReleased') b.releaseAck = null; }
 }
 async function execute(b, job) {
   await globalThis.ZhsCore.authorizeInput(job.sender, job.request);
@@ -196,7 +254,7 @@ async function requestInput(request, sender) {
       if (job.settled) return;
       job.cancelled = true;
       finish(b, job, false, '输入请求超时；未自动重试。');
-      if (b.active === job) void disarm(b, '输入等待超时，授权已关闭。');
+      if (['pressing','releasing'].includes(job.phase)) void disarm(b, '点击结果未确认，输入授权已关闭。');
     }, 15000);
     b.jobs.set(request.id.toLowerCase(), job); b.queue.push(job); void drain(b);
   });
@@ -207,12 +265,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     senderPage(sender);
     if (message.type === 'zhs-input-bind-ack') {
       const b = binding;
-      if (!b || b.cancelled || b.phase !== 'binding' || b.tabId !== sender.tab.id || b.url !== sender.url || message.nonce !== b.nonce ||
+      if (!b || b.cancelled || b.phase !== 'binding' || b.tabId !== sender.tab.id || b.url !== sender.tab.url || message.nonce !== b.nonce ||
           (b.documentId && b.documentId !== sender.documentId)) throw Error('文档绑定请求已失效。');
       b.documentId = sender.documentId; return {ok: true};
     }
     if (message.type === 'zhs-input-leaving') {
-      if (isBound(binding, sender) && message.nonce === binding.nonce) await disarm(binding, '页面已退出，输入授权已关闭。');
+      if (isBound(binding, sender) && message.nonce === binding.nonce) waitForDocument(binding);
       return {ok: true};
     }
     if (message.type === 'zhs-input-request') return requestInput(message.request, sender);

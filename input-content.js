@@ -167,7 +167,10 @@
         if (!P.isId(message.nonce) || message.href !== location.href || !P.course(location.href)) throw Error('无法绑定当前共享课文档。');
         sessionNonce = message.nonce; tickets.clear();
         const response = await chrome.runtime.sendMessage({type: 'zhs-input-bind-ack', nonce: message.nonce});
-        if (!response?.ok) { sessionNonce = null; throw Error('后台未确认文档绑定。'); }
+        if (!response?.ok) {
+          if (sessionNonce === message.nonce) sessionNonce = null;
+          throw Error('后台未确认文档绑定。');
+        }
         return {ok: true};
       }
       if (message.type === 'zhs-input-disarm') {
