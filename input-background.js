@@ -130,7 +130,7 @@ async function mouse(b, job, type, point) {
     await delay(chrome.debugger.sendCommand({tabId: b.tabId}, 'Input.dispatchMouseEvent', {
       type, x: point.x, y: point.y, button: type === 'mouseMoved' ? 'none' : 'left',
       buttons: pressed ? 1 : 0, ...(type === 'mouseMoved' ? {} : {clickCount: 1}), pointerType: 'mouse'
-    }), 1200, '鼠标输入');
+    }), 4000, '鼠标输入');
   } catch (error) {
     await disarm(b, '鼠标输入未确认完成，授权已关闭；请人工检查页面。' + messageError(error));
     throw error;
@@ -196,7 +196,7 @@ async function requestInput(request, sender) {
       job.cancelled = true;
       finish(b, job, false, '输入请求超时；未自动重试。');
       if (b.active === job) void disarm(b, '输入等待超时，授权已关闭。');
-    }, 5500);
+    }, 15000);
     b.jobs.set(request.id.toLowerCase(), job); b.queue.push(job); void drain(b);
   });
 }

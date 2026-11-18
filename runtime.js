@@ -74,8 +74,10 @@
     if (!installValue(message.key, message.value, message.revision)) return;
     for (const fn of valueListeners) { try { fn(message.key,clone(values[message.key])); } catch (_) {} }
     const fresh = authoritative.zhsVideoRunV1;
-    if (message.key === 'zhsVideoRunV1' && previous?.enabled && previous.owner === clientId &&
-        (!fresh?.enabled || fresh.id !== previous.id || fresh.owner !== clientId)) tell('运行已由另一页面暂停或接管。');
+    if (message.clientId !== clientId && message.key === 'zhsVideoRunV1' && previous?.enabled && previous.owner === clientId) {
+      if (!fresh?.enabled) tell('另一页面已暂停播放。');
+      else if (fresh.id !== previous.id || fresh.owner !== clientId) tell('播放已切换到另一标签页。');
+    }
   }
   chrome.runtime.onMessage.addListener((message, sender) => {
     if (sender.id !== chrome.runtime.id || sender.tab || message?.type !== 'zhs-core-changed') return false;
@@ -116,7 +118,7 @@
     revisions = {...initial.revisions}; predicted = {...revisions};
     for (const message of broadcasts.splice(0)) changed(message);
     const api = {
-      clientId,
+      clientId, tabId: initial.tabId,
       onAuthorityLost(fn) { listeners.add(fn); return () => listeners.delete(fn); },
       onValuesChanged(fn) { valueListeners.add(fn); return () => valueListeners.delete(fn); },
       leaseVerified(id, owner) { const run = authoritative.zhsVideoRunV1; return !writeError && run?.enabled && run.id === id && run.owner === owner && owner === clientId && run.leaseUntil > Date.now(); },

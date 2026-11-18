@@ -107,6 +107,14 @@
     if (page.home && (!prior || target.id !== prior.id || target.courseUrl !== prior.courseUrl || target.owner !== null)) throw Error('首页不能新建或接管课程任务。');
     const otherActive = prior?.id === target.id && prior.enabled && prior.owner && prior.owner !== sender.documentId && prior.leaseUntil > Date.now();
     if (otherActive && !(target.enabled === false && target.owner === null)) throw Error('另一标签的运行租约尚未到期。');
+    if (key === RUN) {
+      const assigned = prior?.id === target.id ? prior.playbackTabId : null;
+      if (target.owner && Number.isInteger(assigned) && assigned !== sender.tab.id) throw Error('此播放任务属于另一标签页。');
+      // 标签标识由浏览器提供。刷新释放文档租约时仍保留标签归属。
+      if (target.owner) target.playbackTabId = sender.tab.id;
+      else if (Number.isInteger(assigned)) target.playbackTabId = assigned;
+      else delete target.playbackTabId;
+    }
     if (target.owner && target.leaseUntil > Date.now() + 60000) throw Error('运行租约时长超过限制。');
     return target;
   }
@@ -258,7 +266,7 @@
         return saveOptions(message, sender);
       }
       const page = await verifySender(sender); await ready;
-      if (message.type === 'zhs-core-init') { await mutations; return {ok: true, ...snapshot(), clientId: sender.documentId}; }
+      if (message.type === 'zhs-core-init') { await mutations; return {ok: true, ...snapshot(), clientId: sender.documentId, tabId: sender.tab.id}; }
       if (message.type === 'zhs-core-set') return setValue(message, sender, page);
       if (message.type === 'zhs-core-trace') return appendTrace(message, sender);
       if (message.type === 'zhs-core-options') { await chrome.runtime.openOptionsPage(); return {ok: true}; }
