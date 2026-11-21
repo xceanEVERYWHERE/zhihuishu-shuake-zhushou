@@ -135,19 +135,26 @@
     const first = locate(request);
     if (first.skip) return {ok: true, noop: true};
     first.element.scrollIntoView({block: 'center', inline: 'center', behavior: 'instant'});
-    const a = point(first.element);
-    await wait(80);
-    verifySession(message);
-    const fresh = locate(request);
-    if (fresh.skip) return {ok: true, noop: true};
-    if (fresh.element !== first.element) throw Error('目标节点已被替换，未点击。');
-    const b = point(fresh.element);
-    if (Math.abs(a.x - b.x) > 0.75 || Math.abs(a.y - b.y) > 0.75) throw Error('目标仍在移动，未点击。');
+    let position = point(first.element);
+    // 目录滚动或展开后可能要几帧才停稳。只复测同一行，从不在等待期间发送输入。
+    const isDirectory = request.kind === 'lesson' || request.kind === 'restoreLesson';
+    const settleUntil = performance.now() + (isDirectory ? 800 : 0);
+    while (true) {
+      await wait(80);
+      verifySession(message);
+      const fresh = locate(request);
+      if (fresh.skip) return {ok: true, noop: true};
+      if (fresh.element !== first.element) throw Error('目标节点已被替换，未点击。');
+      const previous = position;
+      position = point(fresh.element);
+      if (Math.abs(previous.x - position.x) <= 0.75 && Math.abs(previous.y - position.y) <= 0.75) break;
+      if (performance.now() >= settleUntil) throw Error('目标仍在移动，未点击。');
+    }
     for (const [id, entry] of tickets) if (Date.now() - entry.at > 2500) tickets.delete(id);
     if (tickets.size > 32) throw Error('待核对输入过多，请稍后重试。');
     const ticket = crypto.randomUUID();
-    tickets.set(ticket, {request, element: fresh.element, point: b, nonce: sessionNonce, at: Date.now()});
-    return {ok: true, noop: false, ticket, ...b};
+    tickets.set(ticket, {request, element: first.element, point: position, nonce: sessionNonce, at: Date.now()});
+    return {ok: true, noop: false, ticket, ...position};
   }
   function confirm(message) {
     verifySession(message);

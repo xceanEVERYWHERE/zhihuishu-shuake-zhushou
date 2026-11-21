@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "智慧树助手一体版",
-  "version": "2.1.4.1",
+  "version": "2.1.4.4",
   "description": "一个扩展完成原速连续播放、随堂题辅助与相邻视频切换，章节测试手动完成。",
   "minimum_chrome_version": "125",
   "permissions": ["debugger", "storage", "clipboardWrite"],

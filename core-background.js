@@ -3,7 +3,7 @@
   'use strict';
   const STORE = 'zhsCoreStateV1', RUN = 'zhsVideoRunV1', LEGACY = 'zhsRunV2', TRACE = 'zhsTraceV2';
   const KEYS = ['config', RUN, LEGACY, 'apiKey'];
-  const clients = new Map(), requests = new Map(), seen = new Map(), cancelled = new Map(), revoked = new Set(), tabEpoch = new Map();
+  const clients = new Map(), requests = new Map(), seen = new Map(), cancelled = new Map(), tabEpoch = new Map();
   let state, mutations = Promise.resolve();
   const clone = value => structuredClone(value);
   const cleanError = error => String(error?.message || error).slice(0, 200);
@@ -30,26 +30,39 @@
     } catch (_) {}
     return null;
   }
+  function matchesPage(page, url) {
+    return !!page && (url === page.href || (!page.home && route(url)?.identity === page.identity));
+  }
   function basicSender(sender) {
     if (sender?.id !== chrome.runtime.id || !Number.isInteger(sender.tab?.id) || sender.frameId !== 0 ||
         typeof sender.documentId !== 'string' || !sender.documentId ||
-        (sender.tab.url !== sender.url && !globalThis.ZhsInputProtocol.sameCourse(sender.url, sender.tab.url)) ||
         (sender.documentLifecycle && sender.documentLifecycle !== 'active')) throw Error('仅允许当前学习页的顶层扩展脚本访问。');
     const page = route(sender.tab.url); if (!page) throw Error('当前地址不属于支持的学习页面。');
+    if (!matchesPage(page, sender.url)) throw Error('消息来源与当前课程不一致。');
     return page;
   }
+  function loadingError() {
+    return Object.assign(Error('当前文档仍在加载，请稍后重试。'), {code: 'DOCUMENT_LOADING', retryable: true});
+  }
   async function verifySender(sender) {
-    const page = basicSender(sender), key = sender.tab.id + ':' + sender.documentId, epoch = tabEpoch.get(sender.tab.id) || 0;
-    if (revoked.has(key)) throw Error('此文档已经导航离开，访问已取消。');
-    const tab = await chrome.tabs.get(sender.tab.id);
-    if (revoked.has(key) || (tabEpoch.get(sender.tab.id) || 0) !== epoch) throw Error('页面在请求期间发生导航。');
-    if (!tab || tab.url !== page.href) throw Error('文档已导航，访问已取消。');
-    if (tab.status === 'loading') {
-      // document_idle 可能早于标签完成加载；仅同一有效文档的这种情况允许初始化重试。
-      const error = Error('当前文档仍在加载，请稍后重试。');
-      error.code = 'DOCUMENT_LOADING'; error.retryable = true; throw error;
+    const page = basicSender(sender), tabId = sender.tab.id, documentId = sender.documentId;
+    if (!tabEpoch.has(tabId)) tabEpoch.set(tabId, 0);
+    const epoch = tabEpoch.get(tabId);
+    const tab = await chrome.tabs.get(tabId);
+    if (tabEpoch.get(tabId) !== epoch || tab?.status === 'loading') throw loadingError();
+    if (!matchesPage(page, tab?.url)) throw Error('文档已导航，访问已取消。');
+
+    const client = clients.get(tabId);
+    if (client?.documentId !== documentId || client.epoch !== epoch || !matchesPage(page, client.url)) {
+      // 浏览器同时匹配顶层 frame 和 documentId；刷新到相同地址时旧文档也不能应答。
+      const current = await chrome.tabs.sendMessage(tabId, {type: 'zhs-core-document-check'},
+        {frameId: 0, documentId}).catch(() => null);
+      if (tabEpoch.get(tabId) !== epoch) throw loadingError();
+      if (!matchesPage(page, current?.initialUrl) || !matchesPage(page, current?.href)) {
+        throw Error('此文档已经导航离开，访问已取消。');
+      }
+      clients.set(tabId, {documentId, url: tab.url, epoch});
     }
-    clients.set(key, {tabId: sender.tab.id, documentId: sender.documentId, url: page.href});
     return page;
   }
   function visibleValue(key) { return key === 'apiKey' ? (state.apiKey ? 'configured' : '') : clone(state.values[key] ?? (key === TRACE ? [] : null)); }
@@ -62,8 +75,10 @@
   }
   async function broadcast(key, clientId) {
     const message = {type: 'zhs-core-changed', key, value: visibleValue(key), revision: state.revisions[key], clientId};
-    for (const [id, client] of clients) {
-      void chrome.tabs.sendMessage(client.tabId, message, {frameId: 0, documentId: client.documentId}).catch(() => clients.delete(id));
+    for (const [tabId, client] of clients) {
+      void chrome.tabs.sendMessage(tabId, message, {frameId: 0, documentId: client.documentId}).catch(() => {
+        if (clients.get(tabId) === client) clients.delete(tabId);
+      });
     }
   }
   function dataSize(value, max, depth = 0) {
@@ -254,13 +269,16 @@
     const entry = requests.get(key); if (entry) { entry.reason = 'abort'; entry.controller.abort(); }
     return {ok: true};
   }
-  function clearTab(tabId) {
-    tabEpoch.set(tabId, (tabEpoch.get(tabId) || 0) + 1);
-    for (const [key, client] of clients) if (client.tabId === tabId) { revoked.add(key); clients.delete(key); }
+  function invalidateTab(tabId, url) {
+    if (tabEpoch.has(tabId)) tabEpoch.set(tabId, tabEpoch.get(tabId) + 1);
+    const client = clients.get(tabId);
+    if (client && !matchesPage(route(client.url), url)) clients.delete(tabId);
     for (const entry of requests.values()) if (entry.tabId === tabId) { entry.reason = 'abort'; entry.controller.abort(); }
   }
-  chrome.tabs.onUpdated.addListener((tabId, info) => { if (info.status === 'loading' || Object.hasOwn(info, 'url')) clearTab(tabId); });
-  chrome.tabs.onRemoved.addListener(clearTab);
+  chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+    if (info.status === 'loading' || Object.hasOwn(info, 'url')) invalidateTab(tabId, info.url ?? tab.url);
+  });
+  chrome.tabs.onRemoved.addListener(tabId => { invalidateTab(tabId); tabEpoch.delete(tabId); });
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (!message || !['zhs-core-init', 'zhs-core-set', 'zhs-core-trace', 'zhs-core-ai', 'zhs-core-ai-abort', 'zhs-core-options', 'zhs-options-get', 'zhs-options-save'].includes(message.type)) return false;
     (async () => {
@@ -281,8 +299,5 @@
       ...(error?.code === 'DOCUMENT_LOADING' && error.retryable === true ? {code: 'DOCUMENT_LOADING', retryable: true} : {})}));
     return true;
   });
-  // 同页地址变化也可能触发 loading。输入后台已向当前顶层文档重新握手并核对 documentId。
-  globalThis.ZhsCore = Object.freeze({authorizeInput: authorize, confirmCurrentDocument(tabId, documentId) {
-    revoked.delete(tabId + ':' + documentId);
-  }});
+  globalThis.ZhsCore = Object.freeze({authorizeInput: authorize});
 })();

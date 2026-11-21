@@ -97,7 +97,6 @@ async function bindDocument(b) {
     await currentTab(b);
     const check = await content(b, 'zhs-input-check');
     if (!check?.ok || check.nonce !== b.nonce || check.href !== b.url || binding !== b || b.cancelled) throw Error('授权期间页面发生变化。');
-    if (resuming && b.previousDocumentId === b.documentId) globalThis.ZhsCore.confirmCurrentDocument(b.tabId, b.documentId);
     b.phase = 'enabled'; await badge(b.tabId, 'ON', '共享课正常输入已开启：点击关闭当前标签');
   } catch (error) {
     if (binding !== b || b.cancelled) return;
@@ -183,14 +182,14 @@ async function mouse(b, job, type, point) {
   const pressed = type === 'mousePressed';
   try {
     const confirmed = delay(chrome.debugger.sendCommand({tabId: b.tabId}, 'Input.dispatchMouseEvent', {
-      type, x: point.x, y: point.y, button: type === 'mouseMoved' ? 'none' : 'left',
-      buttons: pressed ? 1 : 0, ...(type === 'mouseMoved' ? {} : {clickCount: 1}), pointerType: 'mouse'
-    }), 4000, {mouseMoved:'移动鼠标', mousePressed:'按下鼠标', mouseReleased:'松开鼠标'}[type]);
+      type, x: point.x, y: point.y, button: 'left',
+      buttons: pressed ? 1 : 0, clickCount: 1, pointerType: 'mouse'
+    }), 4000, pressed ? '按下鼠标' : '松开鼠标');
     if (type === 'mouseReleased') b.releaseAck = confirmed;
     await confirmed;
   } catch (error) {
     const owner = b.releaseAck && binding?.releaseAck === b.releaseAck ? binding : b;
-    if (type !== 'mouseMoved') await disarm(owner, '鼠标点击未确认完成，授权已关闭。' + messageError(error));
+    await disarm(owner, '鼠标点击未确认完成，授权已关闭。' + messageError(error));
     throw error;
   } finally { if (type === 'mouseReleased') b.releaseAck = null; }
 }
@@ -202,11 +201,7 @@ async function execute(b, job) {
   live(b, job); const a = coordinates(prepared);
   if (!a) return;
   if (!P.isId(prepared.ticket)) throw Error('输入复核票据无效。');
-  // 弹题控件已滚入视口。直接在复核后的坐标点击，避免等待独立的悬停回执。
-  if (job.request.kind === 'lesson' || job.request.kind === 'restoreLesson') {
-    job.phase = 'moving';
-    await mouse(b, job, 'mouseMoved', a);
-  }
+  // 目录和弹题控件都已滚入视口，复核后可在目标位置直接点击。
   live(b, job); await currentTab(b); live(b, job);
   await globalThis.ZhsCore.authorizeInput(job.sender, job.request);
   live(b, job);

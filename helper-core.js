@@ -1,13 +1,14 @@
 /* 中文说明：一体扩展的隔离页面核心；由 runtime 完成初始化后启动。 */
 (() => {
   const adapter = globalThis.ZhsUnifiedRuntime;
+  const VERSION = chrome.runtime.getManifest().version;
   let started = false, departed = false, note = null, detail, retryButton, reloadButton;
   function showBootstrap(state) {
     if (departed || state.phase === 'ready' || state.phase === 'cancelled') { note?.remove(); note = null; return; }
     if (!note) {
       note = document.createElement('div'); note.id = 'zhs-unified-bootstrap'; note.setAttribute('role','status');
       note.style.cssText='position:fixed;top:96px;right:16px;z-index:2147483647;background:#fff4cc;color:#402c00;padding:18px;border-radius:10px;box-shadow:0 4px 18px #0003;width:300px;max-width:calc(100vw - 68px);font:14px/1.7 sans-serif';
-      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 2.1.4.1';
+      const title = document.createElement('strong'); title.textContent = '智慧树助手一体版 ' + VERSION;
       detail = document.createElement('p'); detail.style.cssText='margin:10px 0';
       retryButton = document.createElement('button'); retryButton.id = 'zhs-unified-retry'; retryButton.textContent = '重试启动';
       reloadButton = document.createElement('button'); reloadButton.id = 'zhs-unified-reload'; reloadButton.textContent = '刷新页面';
@@ -39,7 +40,6 @@
   const {GM_getValue,GM_setValue,GM_xmlhttpRequest,GM_registerMenuCommand,GM_setClipboard} = runtime;
 (() => {
   'use strict';
-  const VERSION = '2.1.4.1';
   const PLAYBACK_RATE = 1, ADVANCE_WAIT_MS = 5000;
   // 作业页即使被手动配置为匹配，也不注入面板或操作题目。
   if (location.hostname === 'onlineexamh5new.zhihuishu.com') return;
@@ -199,9 +199,10 @@
       refreshConfig();
       const existing = GM_getValue(RUN_KEY, null);
       const resumable = existing && sameCourse(existing.courseUrl, location.href) && !existing.complete;
-      const checkpoint = resumable ? (sharedStudy ? {...videoCheckpoint(existing), cursor: null, pending: null} : videoCheckpoint(existing)) : {};
+      const checkpoint = resumable ? videoCheckpoint(existing) : {};
+      // 手动开始时由 tickCourse 从当前目录读取小节。刷新接续则使用已保存的位置。
       run = {...checkpoint, id: crypto.randomUUID(), enabled: true, complete: false, courseUrl: location.href,
-        owner: ownerId, leaseUntil: now() + 15000, updatedAt: now(), phase: 'course',
+        owner: ownerId, leaseUntil: now() + 15000, updatedAt: now(), phase: 'course', cursor: null, pending: null,
         done: checkpoint.done || [], testsDone: checkpoint.testsDone || [], tasks: checkpoint.tasks || [], recoveryAt: checkpoint.recoveryAt || 0};
       GM_setValue(RUN_KEY, run); ctx.run = run; localRunId = run.id; resetLocal();
       const startToken = tokenCounter; await runtime.flush(); if (!isActive(startToken)) return;
@@ -374,7 +375,7 @@
   }
   function checkNextLesson(previous, target) {
     if (!previous) fail('尚未识别当前小节，未执行切课。');
-    if (!isAdjacentLesson(previous, target)) fail(`待恢复的 ${target.label} 不是当前小节的下一节，请手动选中该小节后点击开始。`);
+    if (!isAdjacentLesson(previous, target)) fail(`网页当前选中 ${previous.label}。点“开始”可从本节播放，也可以先在目录选中 ${target.label} 再开始。`);
     if (previous.chapter !== target.chapter) {
       if (target.chapter !== previous.chapter + 1) fail('章节目录不连续，未执行跨章切课。');
       // 当前网站 nextVideo 的普通课章末分支不能正确处理下一章首课为分组的情况。

@@ -3,6 +3,7 @@
   'use strict';
   const listeners = new Set(), valueListeners = new Set();
   const clone = value => value === undefined ? undefined : structuredClone(value);
+  const initialUrl = location.href;
   let values = {}, authoritative = {}, revisions = {}, predicted = {}, clientId = null;
   let queue = [], draining = null, writeError = null;
   const broadcasts = [];
@@ -33,6 +34,7 @@
     });
   }
   globalThis.addEventListener?.('pagehide', () => { pageGone = true; cancelBootstrapStep?.(); });
+  globalThis.addEventListener?.('pageshow', event => { if (event.persisted) pageGone = false; });
   async function initialSnapshot() {
     const deadline = Date.now() + 30000;
     for (let attempt = 0; attempt < 61; attempt++) {
@@ -79,16 +81,28 @@
       else if (fresh.id !== previous.id || fresh.owner !== clientId) tell('播放已切换到另一标签页。');
     }
   }
-  chrome.runtime.onMessage.addListener((message, sender) => {
-    if (sender.id !== chrome.runtime.id || sender.tab || message?.type !== 'zhs-core-changed') return false;
-    changed(message); return false;
+  chrome.runtime.onMessage.addListener((message, sender, reply) => {
+    if (sender.id !== chrome.runtime.id || sender.tab) return false;
+    if (message?.type === 'zhs-core-document-check') reply(pageGone ? null : {initialUrl, href: location.href});
+    if (message?.type === 'zhs-core-changed') changed(message);
+    return false;
   });
   async function drain() {
     while (queue.length) {
       const job = queue[0];
       if (job.cancelled) { queue.shift(); continue; }
       try {
-        const response = await chrome.runtime.sendMessage({type:'zhs-core-set', key:job.key, value:job.value, expectedRevision:job.expectedRevision});
+        const request = {type:'zhs-core-set', key:job.key, value:job.value, expectedRevision:job.expectedRevision};
+        const deadline = Date.now() + 30000;
+        let response;
+        do {
+          response = await chrome.runtime.sendMessage(request);
+          // 只有后台明确在写入之前遇到导航，才用同一版本号重试。
+          if (response?.code !== 'DOCUMENT_LOADING' || response.retryable !== true || job.cancelled || pageGone) break;
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw Error('课程页持续加载，请在加载完成后刷新课程页再开始。');
+          await new Promise(resolve => setTimeout(resolve, Math.min(500, remaining)));
+        } while (!job.cancelled && !pageGone);
         if (job.cancelled) {
           queue = queue.filter(item => item !== job);
           if (response?.key) installValue(response.key,response.value,response.revision);
